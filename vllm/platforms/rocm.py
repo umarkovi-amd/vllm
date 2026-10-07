@@ -893,6 +893,11 @@ class RocmPlatform(Platform):
     @with_amdsmi_context
     def is_fully_connected(cls, physical_device_ids: list[int]) -> bool:
         """Query if the set of gpus are fully connected by xgmi (1 hop)."""
+        if envs.VLLM_ROCM_CUSTOM_AR_PCIE:
+            # Experimental PCIe mode: treat PCIe peer-to-peer as fully
+            # connected so custom all-reduce can run on >2 GPUs. Safety and
+            # profitability limits are applied in CustomAllreduce.
+            return True
         handles = [amdsmi_get_processor_handles()[i] for i in physical_device_ids]
         for i, handle in enumerate(handles):
             for j, peer_handle in enumerate(handles):
@@ -1095,7 +1100,10 @@ class RocmPlatform(Platform):
 
     @classmethod
     def use_custom_allreduce(cls) -> bool:
-        # We only enable custom allreduce for MI300 series
+        # We only enable custom allreduce for MI300 series, unless the
+        # experimental PCIe mode is requested (see VLLM_ROCM_CUSTOM_AR_PCIE).
+        if envs.VLLM_ROCM_CUSTOM_AR_PCIE:
+            return True
         return any(gfx in _GCN_ARCH for gfx in ["gfx94", "gfx95"])
 
     @classmethod
