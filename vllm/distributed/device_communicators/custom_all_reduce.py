@@ -164,19 +164,27 @@ class CustomAllreduce:
         self._IS_CAPTURING = False
         self._capture_registered = register_graph_buffers
         # Experimental ROCm PCIe mode (VLLM_ROCM_CUSTOM_AR_PCIE).
-        # 1) Under graph capture, never read peers' input tensors directly
-        #    (zero-copy): over non-coherent PCIe a peer can read stale data for a
-        #    tensor the producer kernel has just written (its cached lines are not
-        #    necessarily written back). Copy into the uncached IPC buffer instead.
+        # 1) Over non-coherent PCIe a peer can read stale data for a tensor the
+        #    producer kernel has just written (its cached lines are not
+        #    necessarily written back), and the kernels' default start barrier
+        #    gives no visibility guarantee for prior writes. Use the
+        #    release/acquire start barrier so registered (zero-copy) inputs are
+        #    safe under graph capture, or, with VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN,
+        #    copy inputs into the uncached IPC buffer instead.
         # 2) Only small messages use custom all-reduce; one-shot moves (N-1)x
         #    the data per GPU and loses to RCCL's ring for large messages on PCIe.
         self._pcie_max_size: int | None = None
+        self._release_start = False
         if current_platform.is_rocm() and envs.VLLM_ROCM_CUSTOM_AR_PCIE:
             self._pcie_max_size = envs.VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE
-            self._capture_registered = False
+            self._release_start = True
+            if envs.VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN:
+                self._capture_registered = False
             logger.info_once(
                 "Custom allreduce: experimental ROCm PCIe mode enabled "
-                "(copy-in under graph capture, messages < %d bytes).",
+                "(%s under graph capture, release start barrier, "
+                "messages < %d bytes).",
+                "zero-copy" if self._capture_registered else "copy-in",
                 self._pcie_max_size,
             )
         self._ptr = 0
@@ -351,7 +359,11 @@ class CustomAllreduce:
         self.world_size = world_size
         self.fully_connected = fully_connected
         self._ptr = ops.init_custom_ar(
-            self.meta_ptrs, self.rank_data, rank, self.fully_connected
+            self.meta_ptrs,
+            self.rank_data,
+            rank,
+            self.fully_connected,
+            release_start=self._release_start,
         )
         ops.register_buffer(self._ptr, self.buffer_ptrs)
         self._init_mnnvl_buffer(

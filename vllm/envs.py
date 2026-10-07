@@ -261,6 +261,7 @@ if TYPE_CHECKING:
     VLLM_ROCM_QUICK_REDUCE_MIN_SIZE_BYTES_MB: int | None = None
     VLLM_ROCM_CUSTOM_AR_PCIE: bool = False
     VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE: int = 65536
+    VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN: bool = False
     VLLM_ROCM_QUICK_REDUCE_QUANTIZATION_MIN_SIZE_KB: int | None = None
     VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT: int = 480
     VLLM_MOONCAKE_CONNECTOR_TIMEOUT: float = 30.0
@@ -1401,11 +1402,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # connected only over PCIe (no XGMI), e.g. RDNA4 workstation cards.
     # Normally custom all-reduce is limited to MI300-class GPUs and requires
     # 1-hop XGMI between all ranks. When set, PCIe peer-to-peer is treated as
-    # fully connected, graph capture uses the copy-in path (inputs are copied
-    # into the uncached IPC buffer; peers reading cached tensors directly over
-    # non-coherent PCIe can observe stale data), and only messages smaller
-    # than VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE use custom all-reduce; larger
-    # ones fall back to RCCL.
+    # fully connected, the all-reduce kernels open with a system-scope
+    # release/acquire barrier (peers reading cached tensors directly over
+    # non-coherent PCIe could otherwise observe stale data), and only messages
+    # smaller than VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE use custom all-reduce;
+    # larger ones fall back to RCCL.
     "VLLM_ROCM_CUSTOM_AR_PCIE": lambda: (
         os.getenv("VLLM_ROCM_CUSTOM_AR_PCIE", "0").lower() in ("true", "1")
     ),
@@ -1414,6 +1415,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # only for small (latency-bound) messages on PCIe. Default: 65536 (64 KB).
     "VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE": lambda: int(
         os.getenv("VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE", "65536")
+    ),
+    # Fallback for VLLM_ROCM_CUSTOM_AR_PCIE: under graph capture, copy inputs
+    # into the uncached IPC buffer instead of letting peers read them in place
+    # (zero-copy). Costs one copy kernel per all-reduce; use it if
+    # benchmark_custom_allreduce_pcie.py reports mismatches for zero-copy.
+    "VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN": lambda: (
+        os.getenv("VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN", "0").lower() in ("true", "1")
     ),
     # Pad the fp8 weights to 256 bytes for ROCm
     "VLLM_ROCM_FP8_PADDING": lambda: bool(int(os.getenv("VLLM_ROCM_FP8_PADDING", "1"))),

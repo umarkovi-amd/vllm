@@ -15,9 +15,12 @@ Usage (one process per visible GPU is spawned; run from outside the vLLM source 
 otherwise spawned workers import the uncompiled source package):
   cd /tmp && VLLM_ROCM_CUSTOM_AR_PCIE=1 python \\
       <vllm>/benchmarks/kernels/benchmark_custom_allreduce_pcie.py
-  # reproduce the zero-copy hazard (expect mismatches on non-coherent PCIe):
-  cd /tmp && VLLM_ROCM_CUSTOM_AR_PCIE=1 python \\
-      <vllm>/benchmarks/kernels/benchmark_custom_allreduce_pcie.py --mode zero-copy
+Modes (--mode):
+  configured        the path the server uses: zero-copy with the release start
+                    barrier, or copy-in if VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN=1
+  copy-in           force the copy-in path (baseline / fallback)
+  unsafe-zero-copy  zero-copy with the default relaxed start barrier; reproduces
+                    the stale-read hazard (expect mismatches on non-coherent PCIe)
 Options: --tokens 1,2,4,8,16  --hidden 6656  --replays 20  --bufs 50  --calls 100
 """
 
@@ -69,23 +72,30 @@ def _worker(rank: int, world: int, args: argparse.Namespace) -> None:
     )
     cpu_group = dist.new_group(backend="gloo")
 
+    import vllm._custom_ops as ops
     from vllm.distributed.device_communicators.custom_all_reduce import (
         CustomAllreduce,
     )
 
+    if args.mode == "unsafe-zero-copy":
+        init_custom_ar = ops.init_custom_ar
+
+        def init_relaxed(*a, **kw):
+            return init_custom_ar(*a, **{**kw, "release_start": False})
+
+        ops.init_custom_ar = init_relaxed
     ca = CustomAllreduce(group=cpu_group, device=torch.device(f"cuda:{rank}"))
     if ca.disabled:
         raise RuntimeError(
             "CustomAllreduce is disabled; set VLLM_ROCM_CUSTOM_AR_PCIE=1 on PCIe "
             "systems (or run on a platform where it is natively supported)."
         )
-    if args.mode == "zero-copy":
-        if not hasattr(ca, "_capture_registered"):
-            raise RuntimeError(
-                "--mode zero-copy needs a vLLM with register_graph_buffers support"
-            )
-        ca._capture_registered = True  # reproduce the pre-fix behaviour
-    cap = getattr(ca, "_pcie_max_size", getattr(ca, "_pcie_ar_max", None))
+    if args.mode == "copy-in":
+        ca._capture_registered = False
+    elif args.mode == "unsafe-zero-copy":
+        ca._capture_registered = True
+    ar_path = "zero-copy" if ca._capture_registered else "copy-in"
+    cap = ca._pcie_max_size
     gen = torch.Generator(device="cuda").manual_seed(1234 + rank)
 
     def log(msg: str) -> None:
@@ -159,8 +169,9 @@ def _worker(rank: int, world: int, args: argparse.Namespace) -> None:
     if rank == 0:
         print(
             f"\nworld={world} device={torch.cuda.get_device_name()} "
-            f"arch={torch.cuda.get_device_properties(0).gcnArchName} mode={args.mode} "
-            f"cap={cap} calls/size={args.replays * args.bufs}"
+            f"arch={torch.cuda.get_device_properties(0).gcnArchName} "
+            f"mode={args.mode} path={ar_path} cap={cap} "
+            f"calls/size={args.replays * args.bufs}"
         )
         print(
             f"{'tokens':>6} {'bytes':>9} {'path':>6} {'mismatch':>9} "
@@ -186,7 +197,11 @@ def main() -> None:
     parser.add_argument("--replays", type=int, default=20)
     parser.add_argument("--bufs", type=int, default=50)
     parser.add_argument("--calls", type=int, default=100)
-    parser.add_argument("--mode", choices=["copy-in", "zero-copy"], default="copy-in")
+    parser.add_argument(
+        "--mode",
+        choices=["configured", "copy-in", "unsafe-zero-copy"],
+        default="configured",
+    )
     parser.add_argument("--port", type=int, default=29731)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
