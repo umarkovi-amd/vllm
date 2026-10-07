@@ -163,6 +163,22 @@ class CustomAllreduce:
         """
         self._IS_CAPTURING = False
         self._capture_registered = register_graph_buffers
+        # Experimental ROCm PCIe mode (VLLM_ROCM_CUSTOM_AR_PCIE).
+        # 1) Under graph capture, never read peers' input tensors directly
+        #    (zero-copy): over non-coherent PCIe a peer can read stale data for a
+        #    tensor the producer kernel has just written (its cached lines are not
+        #    necessarily written back). Copy into the uncached IPC buffer instead.
+        # 2) Only small messages use custom all-reduce; one-shot moves (N-1)x
+        #    the data per GPU and loses to RCCL's ring for large messages on PCIe.
+        self._pcie_max_size: int | None = None
+        if current_platform.is_rocm() and envs.VLLM_ROCM_CUSTOM_AR_PCIE:
+            self._pcie_max_size = envs.VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE
+            self._capture_registered = False
+            logger.info_once(
+                "Custom allreduce: experimental ROCm PCIe mode enabled "
+                "(copy-in under graph capture, messages < %d bytes).",
+                self._pcie_max_size,
+            )
         self._ptr = 0
         self.disabled = True
         self.mnnvl_buffer = None
@@ -510,6 +526,12 @@ class CustomAllreduce:
         # for 4 or more non NVLink-capable GPUs, custom allreduce provides
         # little performance improvement over NCCL.
         if self.world_size == 2 or self.fully_connected:
+            if (
+                self._pcie_max_size is not None
+                and inp_size >= self._pcie_max_size
+                and not self.batch_invariant
+            ):
+                return False
             return self.batch_invariant or inp_size < self.max_size
         return False
 
