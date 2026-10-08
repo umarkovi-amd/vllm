@@ -176,10 +176,14 @@ class CustomAllreduce:
         self._pcie_max_size: int | None = None
         self._release_start = False
         if current_platform.is_rocm() and envs.VLLM_ROCM_CUSTOM_AR_PCIE:
-            self._pcie_max_size = envs.VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE
             self._release_start = True
             if envs.VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN:
                 self._capture_registered = False
+            # Default cap: where each path stops beating RCCL on 4x R9700
+            # (zero-copy up to ~12 tokens x 6656 bf16, copy-in up to ~5).
+            self._pcie_max_size = envs.VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE
+            if self._pcie_max_size is None:
+                self._pcie_max_size = 131072 if self._capture_registered else 65536
             logger.info_once(
                 "Custom allreduce: experimental ROCm PCIe mode enabled "
                 "(%s under graph capture, release start barrier, "

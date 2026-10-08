@@ -260,7 +260,7 @@ if TYPE_CHECKING:
     VLLM_ROCM_QUICK_REDUCE_MAX_SIZE_BYTES_MB: int | None = None
     VLLM_ROCM_QUICK_REDUCE_MIN_SIZE_BYTES_MB: int | None = None
     VLLM_ROCM_CUSTOM_AR_PCIE: bool = False
-    VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE: int = 65536
+    VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE: int | None = None
     VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN: bool = False
     VLLM_ROCM_QUICK_REDUCE_QUANTIZATION_MIN_SIZE_KB: int | None = None
     VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT: int = 480
@@ -1412,9 +1412,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     # Size cap (bytes, exclusive) for VLLM_ROCM_CUSTOM_AR_PCIE. One-shot
     # all-reduce moves (N-1)x the message per GPU, which beats RCCL's ring
-    # only for small (latency-bound) messages on PCIe. Default: 65536 (64 KB).
-    "VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE": lambda: int(
-        os.getenv("VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE", "65536")
+    # only for small (latency-bound) messages on PCIe. If unset, the default
+    # depends on the path: 131072 (128 KB) for zero-copy, 65536 (64 KB) with
+    # VLLM_ROCM_CUSTOM_AR_PCIE_COPY_IN, whose extra copy makes it lose earlier.
+    "VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE": lambda: maybe_convert_int(
+        os.getenv("VLLM_ROCM_CUSTOM_AR_PCIE_MAX_SIZE", None)
     ),
     # Fallback for VLLM_ROCM_CUSTOM_AR_PCIE: under graph capture, copy inputs
     # into the uncached IPC buffer instead of letting peers read them in place

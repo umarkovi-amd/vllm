@@ -21,7 +21,7 @@ Modes (--mode):
   copy-in           force the copy-in path (baseline / fallback)
   unsafe-zero-copy  zero-copy with the default relaxed start barrier; reproduces
                     the stale-read hazard (expect mismatches on non-coherent PCIe)
-Options: --tokens 1,2,4,8,16  --hidden 6656  --replays 20  --bufs 50  --calls 100
+Options: --tokens 1,2,4,6,8,12,16  --hidden 6656  --replays 20  --bufs 50  --calls 100
 """
 
 import argparse
@@ -191,7 +191,7 @@ def main() -> None:
     parser.add_argument(
         "--tokens",
         type=lambda s: [int(x) for x in s.split(",")],
-        default=[1, 2, 4, 8, 16],
+        default=[1, 2, 4, 6, 8, 12, 16],
     )
     parser.add_argument("--hidden", type=int, default=6656)
     parser.add_argument("--replays", type=int, default=20)
